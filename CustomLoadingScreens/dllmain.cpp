@@ -10,10 +10,11 @@
 #include <ShlObj.h>
 
 constexpr auto DIR_SLASH = L"/";
-constexpr auto FILE_NULL = L"";
+constexpr auto FILE_BLANK = L"";
 
-constexpr auto LOADING_SCREENS_LOG = L"mods/CustomLoadingScreens.log";
-constexpr auto LOADING_SCREENS_CFG = L"mods/CustomLoadingScreens.cfg";
+constexpr auto LOADING_SCREENS_LOG  = L"mods/CustomLoadingScreens.log";
+constexpr auto LOADING_SCREENS_CFG  = L"mods/CustomLoadingScreens.cfg";
+constexpr auto LOADING_SCREENS_SAVE = L"mods/CustomLoadingScreens.save";
 
 constexpr auto PACKAGE_EXTENSION       = L".package";
 constexpr auto LOADING_SCREENS_FILES   = L"*.package";
@@ -141,6 +142,56 @@ static void ReadCfg(std::wstring &uiPath, std::wstring &screensPath, std::wstrin
     LogMsg("Finished cfg");
 }
 
+static void ReadSave(std::wstring& previousScreen, std::wstring& previousMusic)
+{
+    LogMsg("Reading save");
+    std::wifstream save_file(LOADING_SCREENS_SAVE);
+    save_file.imbue(std::locale(std::locale::empty(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::consume_header>));
+
+    int index = 0;
+
+    wchar_t buf[1024];
+
+    while (save_file.good())
+    {
+        save_file.getline(buf, 1024);
+
+        std::wstring line(buf);
+
+        LogMsg(line);
+
+        switch (index)
+        {
+        case 0:
+            previousScreen = line;
+            break;
+        case 1:
+            previousMusic = line;
+            break;
+        }
+
+        ++index;
+    }
+
+    LogMsg("Finished save");
+}
+
+static void WriteSave(std::wstring currentScreen, std::wstring currentMusic)
+{
+    LogMsg("Writing save");
+
+    DeleteFile(LOADING_SCREENS_SAVE);
+
+    std::wofstream save_file;
+    save_file.imbue(std::locale(std::locale::empty(), new std::codecvt_utf8<wchar_t, 0x10ffff, std::generate_header>));
+    save_file.open(LOADING_SCREENS_SAVE, std::ios_base::out | std::ios_base::app);
+
+    save_file << currentScreen.c_str() << "\n";
+    save_file << currentMusic.c_str() << "\n";
+
+    LogMsg("Finished save");
+}
+
 static bool CopyPackageFile(std::wstring fullSrcPath, std::wstring fullDestPath)
 {
     LogMsg(L"Copy " + fullSrcPath);
@@ -156,14 +207,14 @@ static bool CopyPackageFile(std::wstring fullSrcPath, std::wstring fullDestPath)
     return src && dest;
 }
 
-static bool SelectLoadingScreen(std::wstring baseDir, std::wstring pattern, std::wstring& selectedFile, std::wstring& selectedMusicFile)
+static bool SelectLoadingScreen(std::wstring baseDir, std::wstring pattern, std::wstring previousFile, std::wstring& selectedFile, std::wstring& selectedMusicFile)
 {
     WIN32_FIND_DATAW fileInfo;
     HANDLE hFind;
 
     LogMsg("Selecting loading screen");
 
-    selectedMusicFile = FILE_NULL;
+    selectedMusicFile = FILE_BLANK;
 
     std::wstring findPattern = baseDir + DIR_SLASH + pattern;
 
@@ -174,17 +225,24 @@ static bool SelectLoadingScreen(std::wstring baseDir, std::wstring pattern, std:
     {
         do
         {
-            std::wstring screenPackage = std::wstring(fileInfo.cFileName);
+            std::wstring screenFile = std::wstring(fileInfo.cFileName);
 
-            if (!endsWith(screenPackage, ASSOCIATED_MUSIC_SUFFIX))
+            if (!endsWith(screenFile, ASSOCIATED_MUSIC_SUFFIX))
             {
-                LogMsg(screenPackage);
-                ++count;
-
-                // Generate a random number N, such that 0 <= N < count
-                if (((rand() / (1.0 * (RAND_MAX + 1))) * count) < 1.0)
+                if (screenFile == previousFile)
                 {
-                    selectedFile = screenPackage;
+                    LogMsg(L"Skipping previous file: " + screenFile);
+                }
+                else
+                {
+                    LogMsg(screenFile);
+                    ++count;
+
+                    // Generate a random number N, such that 0 <= N < count
+                    if (((rand() / (1.0 * (RAND_MAX + 1))) * count) < 1.0)
+                    {
+                        selectedFile = screenFile;
+                    }
                 }
             }
         } while (FindNextFileW(hFind, &fileInfo) != 0);
@@ -205,7 +263,7 @@ static bool SelectLoadingScreen(std::wstring baseDir, std::wstring pattern, std:
     return false;
 }
 
-static bool SelectLoadingMusic(std::wstring baseDir, std::wstring pattern, std::wstring& selectedFile)
+static bool SelectLoadingMusic(std::wstring baseDir, std::wstring pattern, std::wstring previousFile, std::wstring& selectedFile)
 {
     WIN32_FIND_DATAW fileInfo;
     HANDLE hFind;
@@ -221,15 +279,22 @@ static bool SelectLoadingMusic(std::wstring baseDir, std::wstring pattern, std::
     {
         do
         {
-            std::wstring musicPackage = std::wstring(fileInfo.cFileName);
+            std::wstring musicFile = std::wstring(fileInfo.cFileName);
 
-            LogMsg(musicPackage);
-            ++count;
-
-            // Generate a random number N, such that 0 <= N < count
-            if (((rand() / (1.0 * (RAND_MAX + 1))) * count) < 1.0)
+            if (musicFile == previousFile)
             {
-                selectedFile = musicPackage;
+                LogMsg(L"Skipping previous file: " + musicFile);
+            }
+            else
+            {
+                LogMsg(musicFile);
+                ++count;
+
+                // Generate a random number N, such that 0 <= N < count
+                if (((rand() / (1.0 * (RAND_MAX + 1))) * count) < 1.0)
+                {
+                    selectedFile = musicFile;
+                }
             }
         } while (FindNextFileW(hFind, &fileInfo) != 0);
 
@@ -277,7 +342,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     std::wstring uiPath, screensPath, screensDestPath;
     std::wstring splashPath, musicPath, musicDestPath;
 
-    std::wstring selectedMusicFile = FILE_NULL;
+    std::wstring previousScreen, previousMusic;
+
+    std::wstring selectedScreenFile = FILE_BLANK;
+    std::wstring selectedMusicFile = FILE_BLANK;
 
     bool doScreenCleanUp = true;
     bool doMusicCleanUp = true;
@@ -295,6 +363,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         ReadCfg(uiPath, screensPath, splashPath, musicPath);
 
         /*
+         * Read any save file
+        */
+        ReadSave(previousScreen, previousMusic);
+
+        /*
          *  Process loading screens
         */
         screensDestPath = uiPath + DIR_SLASH + LOADING_SCREENS_UI_FILE;
@@ -303,13 +376,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         {
             LogMsg("Found Loading Screens Directory");
 
-            std::wstring selectedFile;
-
-            if (SelectLoadingScreen(screensPath, LOADING_SCREENS_FILES, selectedFile, selectedMusicFile))
+            if (SelectLoadingScreen(screensPath, LOADING_SCREENS_FILES, previousScreen, selectedScreenFile, selectedMusicFile))
             {
-                LogMsg(L"Selected Screen: " + selectedFile);
+                LogMsg(L"Selected Screen: " + selectedScreenFile);
 
-                std::wstring relSrcPath = screensPath + DIR_SLASH + selectedFile;
+                std::wstring relSrcPath = screensPath + DIR_SLASH + selectedScreenFile;
 
                 CopyPackageFile(relSrcPath, screensDestPath);
 
@@ -350,7 +421,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             }
             else
             {
-                if (SelectLoadingMusic(musicPath, LOADING_SCREENS_FILES, selectedMusicFile))
+                if (SelectLoadingMusic(musicPath, LOADING_SCREENS_FILES, previousMusic, selectedMusicFile))
                 {
                     LogMsg(L"Selected Music: " + selectedMusicFile);
 
@@ -369,6 +440,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 RestoreSplashPackage(musicBackupDir, musicDestPath);
             }
         }
+
+        WriteSave(selectedScreenFile, selectedMusicFile);
 
         LogMsg("Custom Loading Screens: Exit");
         break;
